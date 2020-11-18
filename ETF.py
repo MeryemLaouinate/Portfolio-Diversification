@@ -14,6 +14,8 @@ from pypfopt import CLA
 #from WebScrap import dftest
 
 df_morocco = pd.read_excel('Bourse_De_Casa.xlsx')
+df_morocco.set_index('Session',inplace= True)
+
 
 #Get the stock symbols in the portfolio
 #FAANG
@@ -29,14 +31,14 @@ st.write("""
 
 ETF_name = st.sidebar.multiselect('Select ETF stocks :', assets)
 
-moroccan_stocks = st.sidebar.multiselect('Select moroccan stocks :', df_morocco.columns.difference(['Session']))
-
+#moroccan_stocks = st.sidebar.multiselect('Select moroccan stocks :', df_morocco.columns.difference(['Session']))
+moroccan_stocks = st.sidebar.multiselect('Select moroccan stocks :', df_morocco.columns)
 df_moroccan_stocks = df_morocco.loc[:,df_morocco.columns.isin(moroccan_stocks)]
 
 #st.write(f"## {ETF_name} ETF")
 model_name = st.sidebar.selectbox(
     'Select model',
-    ('','CLA', 'EF', 'HRP')
+    ('', 'EF', 'HRP','ScipyOpt')
 )
 #st.write(f"## {model_name} Model")
 
@@ -67,7 +69,7 @@ returns.dropna(inplace=True)
 moroccan_stocks_returns = df_moroccan_stocks.pct_change()
 moroccan_stocks_returns.dropna(inplace=True)
 
-############################################# Efficient Frontier
+############################################# Efficient Frontier #######################################################
 
 def deviation_risk_parity(w, cov_matrix):
     diff = w * np.dot(cov_matrix, w) - (w * np.dot(cov_matrix, w)).reshape(-1, 1)
@@ -84,6 +86,27 @@ def calculEF(dataframe):
 
 colors_list = ['#5cb85c','#F9429E','#2C75FF','#DF73FF','#25FDE9','#660099']
 
+if len(ETF_name) !=0 :
+    plt.style.use('seaborn-white')
+    df_ETF.plot(legend=0, figsize=(10, 6), grid=True, title='Daily Returns of the ETF Stocks')
+    plt.tight_layout()
+    plt.ylabel('Adj. Price USD ($)', fontsize=10)
+    plt.legend(df_ETF.columns.values, loc='upper left')
+    st.set_option('deprecation.showPyplotGlobalUse', False)
+    st.pyplot()
+
+if len(moroccan_stocks) !=0 :
+    plt.style.use('seaborn-white')
+    df_moroccan_stocks.plot(legend=0, figsize=(10, 6), grid=True, title='Daily Returns of moroccan Stocks')
+    plt.tight_layout()
+    plt.ylabel('Adj. Price USD ($)', fontsize=10)
+    plt.legend(df_moroccan_stocks.columns.values, loc='upper left')
+    st.set_option('deprecation.showPyplotGlobalUse', False)
+    st.pyplot()
+
+show = st.button('see allocation')
+if len(ETF_name) == 0 & len(moroccan_stocks) == 0:
+    st.write("Please select stocks!!!")
 if model_name == 'EF' :
     if len(ETF_name) == 0 & len(moroccan_stocks) == 0:
         st.write("Please select stocks!!!")
@@ -105,7 +128,7 @@ if model_name == 'EF' :
         st.set_option('deprecation.showPyplotGlobalUse', False)
         st.write(f"## ETF Assets Allocation using Efficient Frontier")
         st.pyplot()
-        st.write(f"## Max Sharp Ratio :  ")
+
 
     if len(moroccan_stocks) != 0:
         df_moroccan_stocks = calculEF(df_moroccan_stocks)
@@ -125,8 +148,9 @@ if model_name == 'EF' :
         st.set_option('deprecation.showPyplotGlobalUse', False)
         st.write(f"## Moroccan Assets Allocation using Efficient Frontier")
         st.pyplot()
-        st.write(f"## Max Sharp Ratio : ")
-################################## Herarchical Risk Parity
+
+
+################################## Herarchical Risk Parity ###############################################################
 
 
 if model_name == 'HRP':
@@ -161,6 +185,7 @@ if model_name == 'HRP':
             ax.annotate(f'{height:.0%}', (x + width / 2, y + height * 1.02), ha='center', fontsize=20)
         st.set_option('deprecation.showPyplotGlobalUse', False)
         st.write(f"## ETF Assets Allocation using Hierarchical Risk Parity")
+        st.pyplot()
     if len(moroccan_stocks) != 0:
         result_pct = dfhrpMor.div(dfhrpMor.sum(1), axis=0)
         ax = result_pct.plot(kind='bar', figsize=(20, 6), width=0.8, color=colors_list, edgecolor=None)
@@ -179,25 +204,46 @@ if model_name == 'HRP':
         st.write(f"## Moroccan Assets Allocation using Hierarchical Risk Parity")
         st.pyplot()
 
-############################################ CRITICAL LINE ALGORITHM
+############################################ Scipy Optimize #############################################################
 
-def calculCLA(dataframe):
-    mu = expected_returns.mean_historical_return(dataframe)
-    S = risk_models.sample_cov(dataframe)
-    cla = CLA(mu, S)
-    weights = cla.max_sharpe()
-
-    return pd.DataFrame([weights])
+mean_returns_ETF = df_ETF.pct_change().mean()
+cov_ETF = df_ETF.pct_change().cov()
+rf = 0.0
+mean_returns_M = df_moroccan_stocks.pct_change().mean()
+cov_M = df_moroccan_stocks.pct_change().cov()
 
 
-if model_name == 'CLA':
+import scipy.optimize as sco
+def calc_neg_sharpe(weights, mean_returns, cov, rf):
+    portfolio_return = np.sum(mean_returns * weights) * 252
+    portfolio_std = np.sqrt(np.dot(weights.T, np.dot(cov, weights))) * np.sqrt(252)
+    sharpe_ratio = (portfolio_return - rf) / portfolio_std
+    return -sharpe_ratio
+
+constraints = ({'type': 'eq', 'fun': lambda x: np.sum(x) - 1})
+
+def max_sharpe_ratio(mean_returns, cov, rf):
+    num_assets = len(mean_returns)
+    args = (mean_returns, cov, rf)
+    constraints = ({'type': 'eq', 'fun': lambda x: np.sum(x) - 1})
+    bound = (0.0,1.0)
+    bounds = tuple(bound for asset in range(num_assets))
+    result = sco.minimize(calc_neg_sharpe, num_assets*[1./num_assets,], args=args,
+                        method='SLSQP', bounds=bounds, constraints=constraints)
+    return result
+
+optimal_port_sharpe_ETF = max_sharpe_ratio(mean_returns_ETF, cov_ETF, rf)
+optimal_port_sharpe_M = max_sharpe_ratio(mean_returns_M, cov_M, rf)
+dfsETF = pd.DataFrame([round(x,2) for x in optimal_port_sharpe_ETF['x']],index=ETF_name).T
+dfsM = pd.DataFrame([round(x,2) for x in optimal_port_sharpe_M['x']],index=moroccan_stocks).T
+
+if model_name == 'ScipyOpt':
     if len(ETF_name) == 0 & len(moroccan_stocks) == 0:
         st.write("Please select stocks!!!")
-    if len(ETF_name) != 0 :
-        df_ETF = calculCLA(df_ETF)
-        result_pct = df_ETF.div(df_ETF.sum(1), axis=0)
-        ax = result_pct.plot(kind='bar', figsize=(20, 6), width=0.6, color=colors_list, edgecolor=None)
-        plt.legend(labels=df_ETF.columns, fontsize=20)
+    if len(ETF_name) != 0:
+        result_pct = dfsETF.div(dfsETF.sum(1), axis=0)
+        ax = result_pct.plot(kind='bar', figsize=(20, 6), width=0.8, color=colors_list, edgecolor=None)
+        plt.legend(labels=dfsETF.columns, fontsize=20)
         plt.xticks(fontsize=20)
         for spine in plt.gca().spines.values():
             spine.set_visible(False)
@@ -207,16 +253,14 @@ if model_name == 'CLA':
             width = p.get_width()
             height = p.get_height()
             x, y = p.get_xy()
-            ax.annotate(f'{height:.0%}', (x + width / 2, y + height), ha='center', fontsize=20)
+            ax.annotate(f'{height:.0%}', (x + width / 2, y + height * 1.02), ha='center', fontsize=20)
         st.set_option('deprecation.showPyplotGlobalUse', False)
-        st.write(f"## ETF Assets Allocation using Critical Line Algorithm")
+        st.write(f"## ETF Assets Allocation using Scipy Opt")
         st.pyplot()
-
     if len(moroccan_stocks) != 0:
-        df_moroccan_stocks = calculCLA(df_moroccan_stocks)
-        result_pct = df_moroccan_stocks.div(df_moroccan_stocks.sum(1), axis=0)
-        ax = result_pct.plot(kind='bar', figsize=(20, 6), width=0.6, color=colors_list, edgecolor=None)
-        plt.legend(labels=df_moroccan_stocks.columns, fontsize=20)
+        result_pct = dfsM.div(dfsM.sum(1), axis=0)
+        ax = result_pct.plot(kind='bar', figsize=(20, 6), width=0.8, color=colors_list, edgecolor=None)
+        plt.legend(labels=dfsM.columns, fontsize=20)
         plt.xticks(fontsize=20)
         for spine in plt.gca().spines.values():
             spine.set_visible(False)
@@ -226,7 +270,7 @@ if model_name == 'CLA':
             width = p.get_width()
             height = p.get_height()
             x, y = p.get_xy()
-            ax.annotate(f'{height:.0%}', (x + width / 2, y + height), ha='center', fontsize=20)
+            ax.annotate(f'{height:.0%}', (x + width / 2, y + height * 1.02), ha='center', fontsize=20)
         st.set_option('deprecation.showPyplotGlobalUse', False)
-        st.write(f"## Moroccan Assets Allocation using Critical Line Algorithm")
+        st.write(f"## Moroccan Assets Allocation using ScipyOpt")
         st.pyplot()
